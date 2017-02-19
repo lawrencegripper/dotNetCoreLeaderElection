@@ -72,7 +72,7 @@ namespace ConsoleApplication
                     }
                     else
                     {
-                        if (!IsMaster)
+                        if (!IsMaster && electionTask != null)
                         {
                             Debug.WriteLine($"Was already secondary, nothing changes");
                         }
@@ -100,12 +100,12 @@ namespace ConsoleApplication
 
             electionTaskCancellationSource?.Cancel();
 
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            // await Task.Delay(TimeSpan.FromSeconds(5));
 
-            if (!electionTask.IsCanceled)
-            {
-                throw new FailedToCancelElectionTask();
-            }
+            // if (!electionTask.IsCompleted || !electionTask.IsCanceled || !electionTask.IsFaulted)
+            // {
+            //     throw new FailedToCancelElectionTask();
+            // }
 
             electionTaskCancellationSource = new CancellationTokenSource();
         }
