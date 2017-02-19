@@ -12,8 +12,8 @@ namespace ConsoleApplication
         private EtcdClient etcdClient;
         private const int electionTimeoutSec = 15;
         private readonly CancellationToken cancellationToken;
-        private CancellationTokenSource isSecondaryCancellationTokenSource;
-        private CancellationTokenSource isMasterCancellationTokenSource;
+        private Task electionTask; 
+        private CancellationTokenSource electionTaskCancellationSource = new CancellationTokenSource();
 
         public string InstanceId { get; private set; } = Guid.NewGuid().ToString();
         public string ElectionKey { get; private set; } = "/MasterElection/Status";
@@ -41,7 +41,7 @@ namespace ConsoleApplication
             etcdClient = new EtcdClient(options);
         }
 
-        public async Task StartParticipatingInElection()
+        public async Task StartParticipatingInElectionAsync()
         {
             await Task.Run(async () =>
             {
@@ -65,29 +65,49 @@ namespace ConsoleApplication
                         else
                         {
                             isMaster = true;
-
-                            isSecondaryCancellationTokenSource?.Cancel();
-
-                            isMasterCancellationTokenSource = new CancellationTokenSource();
-
-                            Task.Run(() => isNowMaster(isMasterCancellationTokenSource.Token));
+                            await CancelCurrentElectionTaskAsync();
+                            electionTask = Task.Run(() => isNowMaster(electionTaskCancellationSource.Token));
                             Debug.WriteLine($"Becoming master, wasn't already");
                         }
                     }
                     else
                     {
-                        isMaster = false;
-
-                        isMasterCancellationTokenSource?.Cancel();
-
-                        isSecondaryCancellationTokenSource = new CancellationTokenSource();
-
-                        Task.Run(() => isNowSecondary(isSecondaryCancellationTokenSource.Token));
-                        Debug.WriteLine($"Not the master, either lost it or never had it");
+                        if (!IsMaster)
+                        {
+                            Debug.WriteLine($"Was already secondary, nothing changes");
+                        }
+                        else
+                        {
+                            isMaster = false;
+                            await CancelCurrentElectionTaskAsync();
+                            electionTask = Task.Run(() => isNowSecondary(electionTaskCancellationSource.Token));
+                            Debug.WriteLine($"Not the master, either lost it or never had it");
+                        }
                     }
                 }
             });
 
+        }
+
+
+
+        private async Task CancelCurrentElectionTaskAsync()
+        {
+            if (electionTask == null)
+            {
+                return;
+            }
+
+            electionTaskCancellationSource?.Cancel();
+
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            if (!electionTask.IsCanceled)
+            {
+                throw new FailedToCancelElectionTask();
+            }
+
+            electionTaskCancellationSource = new CancellationTokenSource();
         }
 
         private async Task<bool> UpdateKeyAndCheckIsMaster(EtcdNode node)

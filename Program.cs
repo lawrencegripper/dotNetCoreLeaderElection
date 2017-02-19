@@ -19,18 +19,18 @@ namespace ConsoleApplication
                     while (!cancellationToken.IsCancellationRequested)
                     {
                         Console.WriteLine("We're Master!!");
-                        Task.Delay(TimeSpan.FromSeconds(15)).Wait();
+                        Task.Delay(TimeSpan.FromSeconds(3)).Wait();
                     }
                 },
                 isNowSecondary: (cancellationToken) =>{
                     while (!cancellationToken.IsCancellationRequested)
                     {
                         Console.WriteLine("We're secondary");
-                        Task.Delay(TimeSpan.FromSeconds(15)).Wait();                        
+                        Task.Delay(TimeSpan.FromSeconds(3)).Wait();                        
                     }
                 });
 
-            Task.Run(election.StartParticipatingInElection).Wait();
+            Task.Run(election.StartParticipatingInElectionAsync).Wait();
 
             Console.WriteLine("Hello World!");
         }
