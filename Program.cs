@@ -28,7 +28,8 @@ namespace ConsoleApplication
                         Console.WriteLine("We're secondary");
                         Task.Delay(TimeSpan.FromSeconds(3)).Wait();                        
                     }
-                });
+                },
+                electionTimeoutSec: 15);
 
             Task.Run(election.StartParticipatingInElectionAsync).Wait();
 

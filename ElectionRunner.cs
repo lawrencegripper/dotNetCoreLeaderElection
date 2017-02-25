@@ -10,7 +10,7 @@ namespace ConsoleApplication
     public class ElectionRunner
     {
         private EtcdClient etcdClient;
-        private const int electionTimeoutSec = 15;
+        private int electionTimeoutSec;
         private readonly CancellationToken cancellationToken;
         private Task electionTask; 
         private CancellationTokenSource electionTaskCancellationSource = new CancellationTokenSource();
@@ -28,11 +28,17 @@ namespace ConsoleApplication
             }
         }
 
-        public ElectionRunner(CancellationToken cancellationToken, Action<CancellationToken> isNowMaster, Action<CancellationToken> isNowSecondary)
+        public ElectionRunner(
+            CancellationToken cancellationToken,
+            Action<CancellationToken> isNowMaster,
+            Action<CancellationToken> isNowSecondary,
+            int electionTimeoutSec)
         {
             this.cancellationToken = cancellationToken;
             this.isNowMaster = isNowMaster;
             this.isNowSecondary = isNowSecondary;
+
+            this.electionTimeoutSec = electionTimeoutSec;
 
             var options = new EtcdClientOpitions()
             {
@@ -102,9 +108,9 @@ namespace ConsoleApplication
 
             // await Task.Delay(TimeSpan.FromSeconds(5));
 
-            // if (!electionTask.IsCompleted || !electionTask.IsCanceled || !electionTask.IsFaulted)
+            // if (electionTask != null && !electionTask.IsCompleted || !electionTask.IsCanceled || !electionTask.IsFaulted)
             // {
-            //     throw new FailedToCancelElectionTask();
+            //     throw new FailedToCancelElectionTask("Failed to clean up");
             // }
 
             electionTaskCancellationSource = new CancellationTokenSource();
@@ -112,8 +118,12 @@ namespace ConsoleApplication
 
         private async Task<bool> UpdateKeyAndCheckIsMaster(EtcdNode node)
         {
-            //Update our key to ensure it doens't expire
-            await etcdClient.SetNodeAsync(node.Key, InstanceId, electionTimeoutSec);
+            //Update our key to ensure it doens't expire.
+            //Only do this if it exists
+            await etcdClient.CompareAndSwapNodeAsync(node.Key, InstanceId, InstanceId, electionTimeoutSec);
+
+            //Todo: validate what happens here if the key's ttl has expired due to this node hanging. 
+            // Expect it to throw and crash the node, orchestrata would then restart and node would be bottom of the list for next master. 
 
             await Task.Delay(TimeSpan.FromSeconds(electionTimeoutSec - 10));
 
