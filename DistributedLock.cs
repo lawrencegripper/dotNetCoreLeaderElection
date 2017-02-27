@@ -13,8 +13,6 @@ namespace ConsoleApplication
         private const string LockPrefix = "/DistributedLock/locks/";
         private readonly EtcdClient EtcdClient;
         private Guid InstanceId = Guid.NewGuid();
-        private Timer LockExpiredTimer;
-
         public DistributedLock()
         {
             var options = new EtcdClientOpitions()
@@ -24,24 +22,33 @@ namespace ConsoleApplication
             EtcdClient = new EtcdClient(options);
         }
 
-        public async Task<DistributedLockSession> GetLock(string lockName, int ttlInSecs = 15)
+        public async Task<DistributedLockSession> GetLock(string lockName, int ttlInSecs = 45)
         {
             var compositeKey = LockPrefix + lockName;
             var lockInstanceId = Guid.NewGuid();
             try
             {
-                var response = await EtcdClient.CompareAndSwapNodeAsync(compositeKey, "nil", lockInstanceId.ToString(), ttlInSecs);
+                //Try and create a node for the lock
+                var response = await EtcdClient.CreateNodeAsync(compositeKey, lockInstanceId.ToString(), ttlInSecs);
+                return new DistributedLockSession(EtcdClient, compositeKey, lockInstanceId, ttlInSecs);
             }
-            catch (TestFailed ex)
-            {
-                await EtcdClient.WatchNodeAsync(compositeKey);
-            }
-            catch (Exception ex)
+            catch (NodeExist ex)
             {
                 Debug.WriteLine(ex.ToString());
+                //If it already exists then someone else is holding the lock. 
+                //Use watch to wait for changes to the node
+                var watchResult = await EtcdClient.WatchNodeAsync(compositeKey);
+                //If it's been removed try and get a lock again 
+                if (watchResult.Action == "delete" || watchResult.Action == "expire")
+                {
+                    return await GetLock(lockName, ttlInSecs);
+                }
+                else
+                {
+                    throw new Exception($"Unknown action returned by watch statement: {watchResult.Action}");
+                }
             }
 
-            return new DistributedLockSession(EtcdClient, compositeKey, lockInstanceId, ttlInSecs);
         }
 
         public class DistributedLockSession : IDisposable
@@ -50,25 +57,56 @@ namespace ConsoleApplication
             private readonly string key;
             private readonly EtcdClient client;
             private readonly Guid lockInstanceId;
-            private readonly Timer expireTimer;
+            private DateTime expireTime;
             private bool isReleased = false;
+            private const int ttlBufferSec = 2;
+            private Task lockCheckTask;
+            private CancellationTokenSource lockCheckCancellation = new CancellationTokenSource();
 
             public DistributedLockSession(EtcdClient client, string key, Guid lockInstanceId, int ttlInSecs = 15)
             {
+                this.expireTime = DateTime.Now.Add(TimeSpan.FromSeconds(ttlInSecs));
+
                 this.client = client;
                 this.key = key;
                 this.ttlInSecs = ttlInSecs;
                 this.lockInstanceId = lockInstanceId;
-                this.expireTimer = new Timer(x =>
+
+                lockCheckTask = Task.Run(async () =>
                 {
-                    throw new Exception("Lock expired");
-                }, this, ttlInSecs * 100, -1);
+                    while (true)
+                    {
+                        //Arbritrary Tick time... could be less. Should ok if you're lock TTL is > 3sec but worth testing
+                        await Task.Delay(TimeSpan.FromSeconds(1));
+
+                        //Very simple calc to auto rety if we're 3/4's through the ttl length. 
+                        //Todo: Will be a problem if the ETCD CompareAndSwap takes longer than 1/4 of TTL Time. 
+                        if (AboutToExpire(ttlInSecs))
+                        {
+                            await RenewLock();
+                        }
+
+                        if (lockCheckCancellation.Token.IsCancellationRequested)
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+
+            private bool AboutToExpire(int ttlInSecs)
+            {
+                return DateTime.Now > expireTime.Add(TimeSpan.FromSeconds((ttlInSecs / 4) * -1));
             }
 
             public async Task Release()
             {
+                if (isReleased)
+                {
+                    throw new Exception("Lock is no longer held");
+                }
+
                 await client.CompareAndDeleteNodeAsync(key, lockInstanceId.ToString());
-                this.expireTimer.Dispose();
                 this.isReleased = true;
             }
 
@@ -78,10 +116,14 @@ namespace ConsoleApplication
                 {
                     throw new Exception("Lock is no longer held");
                 }
+                //Renew the key with an exteneded ttlInSecs
+                //Check the value is out lock Instance to ensure we still hold the lock. 
                 await client.CompareAndSwapNodeAsync(key, lockInstanceId.ToString(), lockInstanceId.ToString(), ttlInSecs);
+                expireTime = DateTime.Now.Add(TimeSpan.FromSeconds(ttlInSecs));
             }
 
             #region IDisposable Support
+
             private bool disposedValue = false; // To detect redundant calls
 
             protected virtual void Dispose(bool disposing)
@@ -90,9 +132,10 @@ namespace ConsoleApplication
                 {
                     if (disposing)
                     {
-                        
+                        //Cleanup the lock and cancel the lockCheckTask
                         Release().GetAwaiter().GetResult();
                         isReleased = true;
+                        lockCheckCancellation.Cancel();
                     }
 
                     disposedValue = true;
